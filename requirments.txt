@@ -1,8 +1,11 @@
-flask
-flask-cors
+fastapi
+uvicorn
+python-multipart
 requests
-beautifulsoup4
-pdfplumber
 gspread
 oauth2client
-gunicorn
+google-api-python-client
+aiogram
+pydantic
+Pillow
+python-dotenv
