@@ -1,35 +1,21 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import requests
-from bs4 import BeautifulSoup
-import re
+from flask import Flask, jsonify, request
+from flask_cors import CORS  # Import CORS
 
 app = Flask(__name__)
-CORS(app) # Enables cross-origin requests
 
-# --- YOUR ORIGINAL SCORING LOGIC HERE ---
-def calculate_marks(q_id, student_res, q_type, ans_key):
-    # (Paste your existing calculate_marks function here)
-    pass
+# Replace with your actual Hostinger website URL
+CORS(app, resources={r"/*": {"origins": "https://btnavimumbai.com"}})
 
 @app.route('/calculate', methods=['POST'])
-def process_data():
+def calculate():
+    # Your existing JEE scraping logic
     data = request.json
     response_url = data.get("url")
-    
-    try:
-        # 1. Fetch HTML from NTA link
-        res = requests.get(response_url, timeout=10)
-        # 2. Extract and score using your logic
-        # ... logic to parse chunks and sum marks ...
-        
-        return jsonify({
-            "status": "success",
-            "total": 150, # Example calculated total
-            "shift": "21janM"
-        })
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
+    # ... process logic ...
+    return jsonify({"status": "success", "marks": 150})
 
 if __name__ == "__main__":
-    app.run()
+    # Render requires binding to 0.0.0.0 and a dynamic port
+    import os
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
