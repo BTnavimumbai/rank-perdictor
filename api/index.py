@@ -33,6 +33,32 @@ def get_gs_client():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
+# --- CANDIDATE INFO EXTRACTION ---
+def extract_candidate_info(soup):
+    info = {
+        "name": "N/A",
+        "app_no": "N/A",
+        "roll_no": "N/A",
+        "test_date": "N/A"
+    }
+    # NTA Response sheets usually contain this info in a specific table structure
+    tables = soup.find_all('table')
+    for table in tables:
+        text = table.get_text()
+        if "Application No" in text:
+            rows = table.find_all('tr')
+            for row in rows:
+                cols = row.find_all('td')
+                if len(cols) >= 2:
+                    label = cols[0].get_text(strip=True)
+                    value = cols[1].get_text(strip=True)
+                    if "Candidate Name" in label: info["name"] = value
+                    elif "Application No" in label: info["app_no"] = value
+                    elif "Roll No" in label: info["roll_no"] = value
+                    elif "Test Date" in label: info["test_date"] = value
+            break
+    return info
+
 # --- YOUR SPECIFIC SCORING LOGIC ---
 def calculate_marks(q_id, student_res, q_type, ans_key):
     q_id_str = str(q_id).strip()
@@ -101,6 +127,10 @@ async def process_student(data: StudentInput):
         
         # Parse HTML
         soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract Candidate Details
+        cand = extract_candidate_info(soup)
+        
         content = soup.get_text(separator=' ', strip=True)
         chunks = re.split(r"(?=Q\.\d+)", content)
         report_data = extract_data_from_chunks(chunks, ans_key)
@@ -124,12 +154,24 @@ async def process_student(data: StudentInput):
         
         ws.update(values=[["Question ID", "Type", "Response", "Marks"]] + report_data, range_name='A1')
 
-        # Update Master Sheet Summary
+        # Update Master Sheet Summary with Candidate Details
         master = spreadsheet.sheet1
-        master.append_row([data.phone, phy_score, chem_score, math_score, total_score, data.url])
+        master.append_row([
+            data.phone, 
+            cand["name"], 
+            cand["app_no"], 
+            cand["roll_no"], 
+            cand["test_date"], 
+            phy_score, 
+            chem_score, 
+            math_score, 
+            total_score, 
+            data.url
+        ])
 
         return {
             "status": "success",
+            "name": cand["name"],
             "total": total_score,
             "phy": phy_score,
             "chem": chem_score,
