@@ -1,8 +1,11 @@
 import os
 import json
+import re
+import io
 import requests
+import pdfplumber
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import gspread
@@ -10,59 +13,128 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 app = FastAPI()
 
-# 1. CORS Configuration: Allows your Hostinger site to talk to Vercel
+# Enable CORS for your Hostinger site
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # For strict security, use ["https://btnavimumbai.com"]
+    allow_origins=["*"], 
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 2. Data Model
-class ResponseSheet(BaseModel):
+class StudentInput(BaseModel):
     url: str
     phone: str
 
-# 3. Google Sheets Authentication Helper
-def get_gsheet_client():
-    creds_json = os.environ.get('GOOGLE_CREDENTIALS') # Reads the secret you added
-    if not creds_json:
-        return None
+# --- AUTHENTICATION ---
+def get_gs_client():
+    creds_json = os.environ.get('GOOGLE_CREDENTIALS')
     creds_dict = json.loads(creds_json)
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
+# --- YOUR SPECIFIC SCORING LOGIC ---
+def calculate_marks(q_id, student_res, q_type, ans_key):
+    q_id_str = str(q_id).strip()
+    student_val = str(student_res).strip()
+
+    if q_id_str == "444792191": return 4 # Special Case
+    if q_id_str in ans_key:
+        correct_val = str(ans_key[q_id_str]).strip()
+        if "dropped" in correct_val.lower(): return 4
+
+    if q_id_str == "444792493":
+        correct_options = ["4447921684", "4447921686", "4447921687"]
+        if student_val in correct_options: return 4
+        return 0 if student_val in ["Not Answered", "--"] else -1
+
+    if student_val in ["Not Answered", "--"]: return 0
+    if q_id_str not in ans_key: return 0 
+    
+    correct_val = str(ans_key[q_id_str]).strip()
+    return 4 if student_val == correct_val else -1
+
+# --- EXTRACTION HELPERS ---
+def extract_data_from_chunks(chunks, ans_key):
+    rows = []
+    for chunk in chunks:
+        q_id_match = re.search(r"Question ID\s*[:]\s*(\d+)", chunk)
+        if not q_id_match: continue
+        q_id = q_id_match.group(1)
+        student_res = "Not Answered"
+        is_mcq = "Option 1 ID" in chunk
+        q_type = "MCQ" if is_mcq else "SA"
+        if is_mcq:
+            chosen = re.search(r"Chosen Option\s*[:]\s*([1-4])", chunk)
+            if chosen:
+                opt_num = chosen.group(1)
+                opt_match = re.search(rf"Option {opt_num} ID\s*[:]\s*(\d+)", chunk)
+                if opt_match: student_res = opt_match.group(1)
+        else:
+            given_match = re.search(r"Given(?:\s*Answer)?\s*[:]?\s*([-+]?\d*\.?\d+)", chunk)
+            if given_match: student_res = given_match.group(1)
+        
+        marks = calculate_marks(q_id, student_res, q_type, ans_key)
+        rows.append([q_id, q_type, student_res, marks])
+    return rows
+
 @app.get("/")
 async def health():
-    return {"status": "Backend is Live"}
+    return {"status": "Live"}
 
 @app.post("/calculate")
-async def calculate_marks(data: ResponseSheet):
+async def process_student(data: StudentInput):
     try:
-        # --- SCRAPING LOGIC ---
-        response = requests.get(data.url)
-        if response.status_code != 200:
-            raise HTTPException(status_code=400, detail="Could not fetch the URL")
+        client = get_gs_client()
+        spreadsheet = client.open("JEE_Predictor_Data")
         
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # --- EXAMPLE CALCULATION (Add your specific scraping logic here) ---
-        # This is where your logic to find marks in the HTML goes
-        total_score = 150 
-        exam_shift = "21 Jan Morning"
+        # Load Answer Key
+        ans_tab = spreadsheet.worksheet("ANS")
+        ans_key = {str(row['Question ID']): str(row['Correct Response ID']) for row in ans_tab.get_all_records()}
 
-        # --- SAVE TO GOOGLE SHEETS ---
-        client = get_gsheet_client()
-        if client:
-            # Ensure the sheet name "JEE_Predictor" matches your actual Google Sheet
-            sheet = client.open("JEE_Predictor").sheet1
-            sheet.append_row([data.phone, data.url, total_score, exam_shift])
+        # Fetch Response Sheet
+        link = data.url
+        if link.startswith('cdn3'): link = 'https://' + link
+        
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(link, timeout=15, headers=headers)
+        
+        # Parse HTML
+        soup = BeautifulSoup(response.text, 'html.parser')
+        content = soup.get_text(separator=' ', strip=True)
+        chunks = re.split(r"(?=Q\.\d+)", content)
+        report_data = extract_data_from_chunks(chunks, ans_key)
+
+        if not report_data:
+            return {"status": "error", "message": "Could not parse questions"}
+
+        # Calculate Scores
+        math_score = sum(item[3] for item in report_data[0:25])
+        phy_score = sum(item[3] for item in report_data[25:50])
+        chem_score = sum(item[3] for item in report_data[50:75])
+        total_score = math_score + phy_score + chem_score
+
+        # Update Individual Tab (using Phone as Name)
+        sheet_name = str(data.phone)
+        try:
+            ws = spreadsheet.worksheet(sheet_name)
+            ws.clear()
+        except gspread.exceptions.WorksheetNotFound:
+            ws = spreadsheet.add_worksheet(title=sheet_name, rows="100", cols="5")
+        
+        ws.update(values=[["Question ID", "Type", "Response", "Marks"]] + report_data, range_name='A1')
+
+        # Update Master Sheet Summary
+        master = spreadsheet.sheet1
+        master.append_row([data.phone, phy_score, chem_score, math_score, total_score])
 
         return {
             "status": "success",
             "total": total_score,
-            "shift": exam_shift
+            "phy": phy_score,
+            "chem": chem_score,
+            "math": math_score
         }
+
     except Exception as e:
         return {"status": "error", "message": str(e)}
