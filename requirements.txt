@@ -1,11 +1,19 @@
+# Web Framework
 fastapi
 uvicorn
 python-multipart
-requests
+
+# Google Sheets & API
 gspread
 oauth2client
 google-api-python-client
-aiogram
-pydantic
+
+# Image & Data Processing
 Pillow
+pydantic
 python-dotenv
+
+# Networking & Telegram (Optional for Web, keep if using Bot)
+requests
+aiogram
+
