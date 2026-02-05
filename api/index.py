@@ -126,7 +126,7 @@ async def process_student(data: StudentInput):
 
         # Update Master Sheet Summary
         master = spreadsheet.sheet1
-        master.append_row([data.phone, phy_score, chem_score, math_score, total_score])
+        master.append_row([data.phone, phy_score, chem_score, math_score, total_score, data.url])
 
         return {
             "status": "success",
