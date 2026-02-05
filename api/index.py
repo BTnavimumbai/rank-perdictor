@@ -88,14 +88,20 @@ async def health(): return {"status": "Live"}
 @app.post("/calculate")
 async def process_student(data: StudentInput):
     try:
+        # SCRAPE FIRST (NO API CALLS YET)
+        link = data.url if data.url.startswith('http') else 'https://' + data.url
+        response = requests.get(link, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
+        soup = BeautifulSoup(response.text, 'html.parser')
+        cand = extract_candidate_info(soup)
+        
+        # Connect to Google ONLY ONCE
         client = get_gs_client()
         ss = client.open("JEE_Predictor_Data")
+        
+        # 1. Get Answer Key
         ans_tab = ss.worksheet("ANS")
         ans_key = {str(r['Question ID']): str(r['Correct Response ID']) for r in ans_tab.get_all_records()}
-
-        link = data.url if data.url.startswith('http') else 'https://' + data.url
-        soup = BeautifulSoup(requests.get(link, timeout=15, headers={'User-Agent': 'Mozilla/5.0'}).text, 'html.parser')
-        cand = extract_candidate_info(soup)
+        
         report_data = extract_data_from_chunks(re.split(r"(?=Q\.\d+)", soup.get_text(separator=' ', strip=True)), ans_key)
 
         m_sc = sum(i[3] for i in report_data[0:25])
@@ -103,25 +109,24 @@ async def process_student(data: StudentInput):
         c_sc = sum(i[3] for i in report_data[50:75])
         tot = m_sc + p_sc + c_sc
 
-        # Individual Tab Update
-        try:
-            ws = ss.worksheet(str(data.phone))
-            ws.clear()
-        except gspread.exceptions.WorksheetNotFound:
-            ws = ss.add_worksheet(title=str(data.phone), rows="100", cols="5")
-        ws.update([["Question ID", "Type", "Response", "Marks"]] + report_data)
+        # 2. Update Individual Tab (Skip if data is "pending" to save quota)
+        if data.percentile != "pending":
+            try:
+                ws = ss.worksheet(str(data.phone))
+                ws.clear()
+            except gspread.exceptions.WorksheetNotFound:
+                ws = ss.add_worksheet(title=str(data.phone), rows="100", cols="5")
+            ws.update([["Question ID", "Type", "Response", "Marks"]] + report_data)
 
-        # Smart Master Update
-        master = ss.sheet1
-        phones = master.col_values(1)
-        row = [data.phone, cand["name"], cand["app_no"], cand["roll_no"], cand["test_date"], cand["test_time"], p_sc, c_sc, m_sc, tot, data.percentile, data.rank, data.url]
-        
-        if data.phone in phones:
-            idx = phones.index(data.phone) + 1
-            master.update(f"A{idx}:M{idx}", [row])
-        else:
+            # 3. Update Master Sheet (Append only to save "Read" quota)
+            master = ss.sheet1
+            row = [data.phone, cand["name"], cand["app_no"], cand["roll_no"], cand["test_date"], cand["test_time"], p_sc, c_sc, m_sc, tot, data.percentile, data.rank, data.url]
             master.append_row(row)
 
-        return {"status": "success", "name": cand["name"], "total": tot, "phy": p_sc, "chem": c_sc, "math": m_sc, "app_no": cand["app_no"], "roll_no": cand["roll_no"], "test_date": cand["test_date"], "test_time": cand["test_time"]}
+        return {
+            "status": "success", 
+            "name": cand["name"], "total": tot, "phy": p_sc, "chem": c_sc, "math": m_sc, 
+            "app_no": cand["app_no"], "roll_no": cand["roll_no"], "test_date": cand["test_date"], "test_time": cand["test_time"]
+        }
     except Exception as e:
         return {"status": "error", "message": str(e)}
