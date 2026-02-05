@@ -2,72 +2,67 @@ import os
 import json
 import requests
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 app = FastAPI()
 
-# Enable CORS so your Hostinger site can talk to Vercel
+# 1. CORS Configuration: Allows your Hostinger site to talk to Vercel
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For production, replace "*" with "https://btnavimumbai.com"
+    allow_origins=["*"], # For strict security, use ["https://btnavimumbai.com"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- GOOGLE SHEETS AUTH CONFIG ---
-def get_gspread_client():
-    try:
-        # Pulls the JSON string from Vercel Environment Variables
-        creds_json = os.environ.get('GOOGLE_CREDENTIALS')
-        if not creds_json:
-            raise ValueError("GOOGLE_CREDENTIALS not found in environment")
-            
-        creds_dict = json.loads(creds_json)
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        return gspread.authorize(creds)
-    except Exception as e:
-        print(f"Auth Error: {e}")
+# 2. Data Model
+class ResponseSheet(BaseModel):
+    url: str
+    phone: str
+
+# 3. Google Sheets Authentication Helper
+def get_gsheet_client():
+    creds_json = os.environ.get('GOOGLE_CREDENTIALS') # Reads the secret you added
+    if not creds_json:
         return None
+    creds_dict = json.loads(creds_json)
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    return gspread.authorize(creds)
 
 @app.get("/")
-async def health_check():
-    return {"status": "Vercel Backend is Live"}
+async def health():
+    return {"status": "Backend is Live"}
 
 @app.post("/calculate")
-async def calculate(request: Request):
+async def calculate_marks(data: ResponseSheet):
     try:
-        data = await request.json()
-        response_url = data.get("url")
-        phone = data.get("phone")
-
-        if not response_url:
-            raise HTTPException(status_code=400, detail="URL is required")
-
-        # 1. SCRAPING LOGIC
-        # Fetch the NTA Response Sheet HTML
-        response = requests.get(response_url)
+        # --- SCRAPING LOGIC ---
+        response = requests.get(data.url)
+        if response.status_code != 200:
+            raise HTTPException(status_code=400, detail="Could not fetch the URL")
+        
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # --- ADD YOUR SPECIFIC JEE MARK CALCULATION LOGIC HERE ---
-        # Example: total_marks = calculate_from_soup(soup)
-        total_marks = 150 # Placeholder
-        exam_shift = "27 Jan Shift 1" # Placeholder
-        
-        # 2. SAVE TO GOOGLE SHEETS
-        client = get_gspread_client()
+        # --- EXAMPLE CALCULATION (Add your specific scraping logic here) ---
+        # This is where your logic to find marks in the HTML goes
+        total_score = 150 
+        exam_shift = "21 Jan Morning"
+
+        # --- SAVE TO GOOGLE SHEETS ---
+        client = get_gsheet_client()
         if client:
-            sheet = client.open("JEE_Predictor_Data").sheet1
-            sheet.append_row([phone, response_url, total_marks, exam_shift])
+            # Ensure the sheet name "JEE_Predictor" matches your actual Google Sheet
+            sheet = client.open("JEE_Predictor").sheet1
+            sheet.append_row([data.phone, data.url, total_score, exam_shift])
 
         return {
             "status": "success",
-            "marks": total_marks,
+            "total": total_score,
             "shift": exam_shift
         }
-
     except Exception as e:
         return {"status": "error", "message": str(e)}
