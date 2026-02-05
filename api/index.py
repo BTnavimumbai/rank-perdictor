@@ -24,6 +24,8 @@ app.add_middleware(
 class StudentInput(BaseModel):
     url: str
     phone: str
+    percentile: str # Added
+    rank: str
 
 # --- AUTHENTICATION ---
 def get_gs_client():
@@ -167,8 +169,10 @@ async def process_student(data: StudentInput):
             phy_score, 
             chem_score, 
             math_score, 
-            total_score, 
-            data.url
+            total_score,
+            data.url,
+            data.percentile, # New Column K
+            data.rank     
         ])
 
         return {
