@@ -3,7 +3,6 @@ import json
 import re
 import io
 import requests
-import pdfplumber
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +23,7 @@ app.add_middleware(
 class StudentInput(BaseModel):
     url: str
     phone: str
-    percentile: str # Added
+    percentile: str 
     rank: str
 
 # --- AUTHENTICATION ---
@@ -42,7 +41,7 @@ def extract_candidate_info(soup):
         "app_no": "N/A",
         "roll_no": "N/A",
         "test_date": "N/A",
-        "test_time": "N/A" # Added Time field
+        "test_time": "N/A"
     }
     tables = soup.find_all('table')
     for table in tables:
@@ -58,16 +57,16 @@ def extract_candidate_info(soup):
                     elif "Application No" in label: info["app_no"] = value
                     elif "Roll No" in label: info["roll_no"] = value
                     elif "Test Date" in label: info["test_date"] = value
-                    elif "Test Time" in label: info["test_time"] = value # Extracting Time
+                    elif "Test Time" in label: info["test_time"] = value
             break
     return info
 
-# --- YOUR SPECIFIC SCORING LOGIC ---
+# --- SCORING LOGIC ---
 def calculate_marks(q_id, student_res, q_type, ans_key):
     q_id_str = str(q_id).strip()
     student_val = str(student_res).strip()
 
-    if q_id_str == "444792191": return 4 # Special Case
+    if q_id_str == "444792191": return 4 
     if q_id_str in ans_key:
         correct_val = str(ans_key[q_id_str]).strip()
         if "dropped" in correct_val.lower(): return 4
@@ -117,21 +116,19 @@ async def process_student(data: StudentInput):
         client = get_gs_client()
         spreadsheet = client.open("JEE_Predictor_Data")
         
-        # Load Answer Key
+        # 1. Load Answer Key
         ans_tab = spreadsheet.worksheet("ANS")
         ans_key = {str(row['Question ID']): str(row['Correct Response ID']) for row in ans_tab.get_all_records()}
 
-        # Fetch Response Sheet
+        # 2. Fetch Response Sheet
         link = data.url
         if link.startswith('cdn3'): link = 'https://' + link
         
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(link, timeout=15, headers=headers)
         
-        # Parse HTML
+        # 3. Parse HTML
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Extract Candidate Details
         cand = extract_candidate_info(soup)
         
         content = soup.get_text(separator=' ', strip=True)
@@ -141,13 +138,13 @@ async def process_student(data: StudentInput):
         if not report_data:
             return {"status": "error", "message": "Could not parse questions"}
 
-        # Calculate Scores
+        # 4. Calculate Scores
         math_score = sum(item[3] for item in report_data[0:25])
         phy_score = sum(item[3] for item in report_data[25:50])
         chem_score = sum(item[3] for item in report_data[50:75])
         total_score = math_score + phy_score + chem_score
 
-        # Update Individual Tab (using Phone as Name)
+        # 5. Update Individual Tab (Fixed Syntax)
         sheet_name = str(data.phone)
         try:
             ws = spreadsheet.worksheet(sheet_name)
@@ -155,24 +152,25 @@ async def process_student(data: StudentInput):
         except gspread.exceptions.WorksheetNotFound:
             ws = spreadsheet.add_worksheet(title=sheet_name, rows="100", cols="5")
         
-        ws.update(values=[["Question ID", "Type", "Response", "Marks"]] + report_data, range_name='A1')
+        # NEW GSPREAD SYNTAX: ws.update([data]) instead of ws.update(range, data)
+        ws.update([["Question ID", "Type", "Response", "Marks"]] + report_data)
 
-        # Update Master Sheet Summary with Candidate Details
+        # 6. Update Master Sheet (World Class 13-Column Order)
         master = spreadsheet.sheet1
         master.append_row([
-            data.phone, 
-            cand["name"], 
-            cand["app_no"], 
-            cand["roll_no"], 
-            cand["test_date"], 
-            cand["test_time"], # New Column F
-            phy_score, 
-            chem_score, 
-            math_score, 
-            total_score,
-            data.url,
-            data.percentile, # New Column K
-            data.rank     
+            data.phone,         # A
+            cand["name"],       # B
+            cand["app_no"],     # C
+            cand["roll_no"],    # D
+            cand["test_date"],   # E
+            cand["test_time"],   # F
+            phy_score,          # G
+            chem_score,         # H
+            math_score,         # I
+            total_score,        # J
+            data.percentile,    # K
+            data.rank,          # L
+            data.url            # M
         ])
 
         return {
@@ -181,7 +179,9 @@ async def process_student(data: StudentInput):
             "total": total_score,
             "phy": phy_score,
             "chem": chem_score,
-            "math": math_score
+            "math": math_score,
+            "percentile": data.percentile,
+            "rank": data.rank
         }
 
     except Exception as e:
