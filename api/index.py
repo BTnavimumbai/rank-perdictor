@@ -120,14 +120,11 @@ async def process_student(data: StudentInput):
         ans_tab = spreadsheet.worksheet("ANS")
         ans_key = {str(row['Question ID']): str(row['Correct Response ID']) for row in ans_tab.get_all_records()}
 
-        # 2. Fetch Response Sheet
+        # 2. Fetch & Parse Response Sheet
         link = data.url
         if link.startswith('cdn3'): link = 'https://' + link
-        
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(link, timeout=15, headers=headers)
-        
-        # 3. Parse HTML
         soup = BeautifulSoup(response.text, 'html.parser')
         cand = extract_candidate_info(soup)
         
@@ -138,40 +135,38 @@ async def process_student(data: StudentInput):
         if not report_data:
             return {"status": "error", "message": "Could not parse questions"}
 
-        # 4. Calculate Scores
+        # 3. Calculate Scores
         math_score = sum(item[3] for item in report_data[0:25])
         phy_score = sum(item[3] for item in report_data[25:50])
         chem_score = sum(item[3] for item in report_data[50:75])
         total_score = math_score + phy_score + chem_score
 
-        # 5. Update Individual Tab (Fixed Syntax)
+        # 4. Update Individual Tab
         sheet_name = str(data.phone)
         try:
             ws = spreadsheet.worksheet(sheet_name)
             ws.clear()
         except gspread.exceptions.WorksheetNotFound:
             ws = spreadsheet.add_worksheet(title=sheet_name, rows="100", cols="5")
-        
-        # NEW GSPREAD SYNTAX: ws.update([data]) instead of ws.update(range, data)
         ws.update([["Question ID", "Type", "Response", "Marks"]] + report_data)
 
-        # 6. Update Master Sheet (World Class 13-Column Order)
+        # 5. SMART UPDATE MASTER SHEET
         master = spreadsheet.sheet1
-        master.append_row([
-            data.phone,         # A
-            cand["name"],       # B
-            cand["app_no"],     # C
-            cand["roll_no"],    # D
-            cand["test_date"],   # E
-            cand["test_time"],   # F
-            phy_score,          # G
-            chem_score,         # H
-            math_score,         # I
-            total_score,        # J
-            data.percentile,    # K
-            data.rank,          # L
-            data.url            # M
-        ])
+        all_phones = master.col_values(1) # Column A is Phone
+        
+        row_data = [
+            data.phone, cand["name"], cand["app_no"], cand["roll_no"], 
+            cand["test_date"], cand["test_time"], phy_score, chem_score, 
+            math_score, total_score, data.percentile, data.rank, data.url
+        ]
+
+        if data.phone in all_phones:
+            # Find the row index (1-based) and update it
+            row_index = all_phones.index(data.phone) + 1
+            master.update(f"A{row_index}:M{row_index}", [row_data])
+        else:
+            # First time entry
+            master.append_row(row_data)
 
         return {
             "status": "success",
@@ -180,9 +175,13 @@ async def process_student(data: StudentInput):
             "phy": phy_score,
             "chem": chem_score,
             "math": math_score,
-            "percentile": data.percentile,
-            "rank": data.rank
+            "app_no": cand["app_no"],
+            "roll_no": cand["roll_no"],
+            "test_date": cand["test_date"],
+            "test_time": cand["test_time"]
         }
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
