@@ -39,9 +39,9 @@ def extract_candidate_info(soup):
         "name": "N/A",
         "app_no": "N/A",
         "roll_no": "N/A",
-        "test_date": "N/A"
+        "test_date": "N/A",
+        "test_time": "N/A" # Added Time field
     }
-    # NTA Response sheets usually contain this info in a specific table structure
     tables = soup.find_all('table')
     for table in tables:
         text = table.get_text()
@@ -56,6 +56,7 @@ def extract_candidate_info(soup):
                     elif "Application No" in label: info["app_no"] = value
                     elif "Roll No" in label: info["roll_no"] = value
                     elif "Test Date" in label: info["test_date"] = value
+                    elif "Test Time" in label: info["test_time"] = value # Extracting Time
             break
     return info
 
@@ -162,6 +163,7 @@ async def process_student(data: StudentInput):
             cand["app_no"], 
             cand["roll_no"], 
             cand["test_date"], 
+            cand["test_time"], # New Column F
             phy_score, 
             chem_score, 
             math_score, 
