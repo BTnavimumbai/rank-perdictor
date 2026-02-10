@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from typing import Optional, Dict # Add this import at the top
+from typing import Optional, Dict
 
 app = FastAPI()
 
@@ -18,15 +18,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 class StudentInput(BaseModel):
     url: str
     phone: str
     percentile: str 
     rank: str
-    # Add this line so Python knows how to handle the manual marks
     manual_data: Optional[Dict] = None
 
-# --- INTERNAL MATH LOGIC (Same as your frontend) ---
+# --- INTERNAL MATH LOGIC ---
 def calculate_percentile_internally(level, marks):
     ref_data = {
         1: [ { "m": 202, "p": 99.9 }, { "m": 90, "p": 95 }, { "m": 78, "p": 90 } ],
@@ -61,7 +61,6 @@ def estimate_rank_internally(p):
             return int(ranges[i+1]['r'] - ratio * (ranges[i+1]['r'] - ranges[i]['r']))
     return int((100 - p) * 20000)
 
-# --- YOUR EXISTING HELPER FUNCTIONS ---
 def get_gs_client():
     creds_json = os.environ.get('GOOGLE_CREDENTIALS')
     creds_dict = json.loads(creds_json)
@@ -117,17 +116,17 @@ def extract_data_from_chunks(chunks, ans_key):
         else:
             given = re.search(r"Given(?:\s*Answer)?\s*[:]?\s*([-+]?\d*\.?\d+)", chunk)
             if given: res = given.group(1)
+        
         correct_ans = ans_key.get(q_id, "N/A") 
         rows.append([q_id, q_type, res, correct_ans, calculate_marks(q_id, res, q_type, ans_key)])
     return rows
 
 @app.get("/")
 async def health(): return {"status": "Live"}
-    
+
 @app.post("/calculate")
 async def process_student(data: StudentInput):
     try:
-        # Initializing variables for scope
         p_sc, c_sc, m_sc, tot = 0, 0, 0, 0
         p_cor, p_inc, p_una = 0, 0, 0
         c_cor, c_inc, c_una = 0, 0, 0
@@ -136,7 +135,6 @@ async def process_student(data: StudentInput):
         report_data = []
         cand = {"name": "Manual Entry", "app_no": "-", "roll_no": "-", "test_date": "-", "test_time": "-"}
 
-        # Logic A: Scrape from Link
         if data.url != "manual_mode":
             link = data.url if data.url.startswith('http') else 'https://' + data.url
             response = requests.get(link, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
@@ -151,10 +149,11 @@ async def process_student(data: StudentInput):
             report_data = extract_data_from_chunks(re.split(r"(?=Q\.\d+)", soup.get_text(separator=' ', strip=True)), ans_key)
 
             def get_section_stats(section_rows):
-                correct = sum(1 for row in section_rows if row[3] == 4)
-                incorrect = sum(1 for row in section_rows if row[3] == -1)
+                # Critical Update: row[4] contains marks now
+                correct = sum(1 for row in section_rows if row[4] == 4)
+                incorrect = sum(1 for row in section_rows if row[4] == -1)
                 unattempted = sum(1 for row in section_rows if row[2] in ["Not Answered", "--"])
-                score = sum(row[3] for row in section_rows)
+                score = sum(row[4] for row in section_rows)
                 return score, correct, incorrect, unattempted
 
             m_sc, m_cor, m_inc, m_una = get_section_stats(report_data[0:25])
@@ -164,11 +163,9 @@ async def process_student(data: StudentInput):
             tot = m_sc + p_sc + c_sc
             tot_cor, tot_inc, tot_una = (m_cor + p_cor + c_cor), (m_inc + p_inc + c_inc), (m_una + p_una + c_una)
 
-        # Logic B: Manual Total Only
         elif data.manual_data:
             tot = int(data.manual_data.get('total', 0))
 
-        # Core Calculation
         final_p, final_r = "0.0000", "0"
         if data.percentile.isdigit():
             level = int(data.percentile)
@@ -176,7 +173,6 @@ async def process_student(data: StudentInput):
             r_val = estimate_rank_internally(p_val)
             final_p, final_r = f"{p_val:.4f}", str(r_val)
 
-            # Single Sheet Update
             client = get_gs_client()
             ss = client.open("JEE_Predictor_Data")
             
@@ -185,8 +181,8 @@ async def process_student(data: StudentInput):
                     ws = ss.worksheet(str(data.phone))
                     ws.clear()
                 except:
-                    ws = ss.add_worksheet(title=str(data.phone), rows="100", cols="5")
-                ws.update([["Question ID", "Type", "Response", "Marks"]] + report_data)
+                    ws = ss.add_worksheet(title=str(data.phone), rows="100", cols="6")
+                ws.update([["Question ID", "Type", "Response", "Correct Answer", "Marks"]] + report_data)
 
             master = ss.sheet1
             row = [data.phone, cand["name"], cand["app_no"], cand["roll_no"], cand["test_date"], cand["test_time"], p_sc, c_sc, m_sc, tot, final_p, final_r, data.url]
