@@ -139,16 +139,28 @@ async def process_student(data: StudentInput):
         
         report_data = extract_data_from_chunks(re.split(r"(?=Q\.\d+)", soup.get_text(separator=' ', strip=True)), ans_key)
 
-        m_sc = sum(i[3] for i in report_data[0:25])
-        p_sc = sum(i[3] for i in report_data[25:50])
-        c_sc = sum(i[3] for i in report_data[50:75])
+        # Helper to calculate stats per section
+        def get_section_stats(section_rows):
+            correct = sum(1 for row in section_rows if row[3] == 4)
+            incorrect = sum(1 for row in section_rows if row[3] == -1)
+            unattempted = sum(1 for row in section_rows if row[2] in ["Not Answered", "--"])
+            score = sum(row[3] for row in section_rows)
+            return score, correct, incorrect, unattempted
+
+        # Calculate subject-wise stats
+        m_sc, m_cor, m_inc, m_una = get_section_stats(report_data[0:25])
+        p_sc, p_cor, p_inc, p_una = get_section_stats(report_data[25:50])
+        c_sc, c_cor, c_inc, c_una = get_section_stats(report_data[50:75])
+        
         tot = m_sc + p_sc + c_sc
+        tot_cor = m_cor + p_cor + c_cor
+        tot_inc = m_inc + p_inc + c_inc
+        tot_una = m_una + p_una + c_una
 
         final_p, final_r = "0.0000", "0"
 
         # 2. Update Individual Tab (Skip if data is "pending" to save quota)
         if data.percentile.isdigit():
-            # Internal Math
             level = int(data.percentile)
             p_val = calculate_percentile_internally(level, tot)
             r_val = estimate_rank_internally(p_val)
@@ -169,8 +181,14 @@ async def process_student(data: StudentInput):
         return {
             "status": "success", 
             "percentile": final_p, "rank": final_r,
-            "name": cand["name"], "total": tot, "phy": p_sc, "chem": c_sc, "math": m_sc, 
-            "app_no": cand["app_no"], "roll_no": cand["roll_no"], "test_date": cand["test_date"], "test_time": cand["test_time"]
+            "name": cand["name"], "total": tot, 
+            "phy": p_sc, "p_cor": p_cor, "p_inc": p_inc, "p_una": p_una,
+            "chem": c_sc, "c_cor": c_cor, "c_inc": c_inc, "c_una": c_una,
+            "math": m_sc, "m_cor": m_cor, "m_inc": m_inc, "m_una": m_una,
+            "tot_cor": tot_cor, "tot_inc": tot_inc, "tot_una": tot_una,
+            "app_no": cand["app_no"], "roll_no": cand["roll_no"], 
+            "test_date": cand["test_date"], "test_time": cand["test_time"],
+            "report_data": report_data # Essential for the detailed Q-by-Q PDF table
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
