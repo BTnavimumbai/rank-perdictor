@@ -25,11 +25,6 @@ class StudentInput(BaseModel):
     rank: str
     # Add this line so Python knows how to handle the manual marks
     manual_data: Optional[Dict] = None
-class StudentInput(BaseModel):
-    url: str
-    phone: str
-    percentile: str # Sent as 'level' (1-5) from frontend
-    rank: str
 
 # --- INTERNAL MATH LOGIC (Same as your frontend) ---
 def calculate_percentile_internally(level, marks):
