@@ -21,9 +21,45 @@ app.add_middleware(
 class StudentInput(BaseModel):
     url: str
     phone: str
-    percentile: str 
+    percentile: str # Sent as 'level' (1-5) from frontend
     rank: str
 
+# --- INTERNAL MATH LOGIC (Same as your frontend) ---
+def calculate_percentile_internally(level, marks):
+    ref_data = {
+        1: [ { "m": 202, "p": 99.9 }, { "m": 90, "p": 95 }, { "m": 78, "p": 90 } ],
+        2: [ { "m": 212, "p": 99.9 }, { "m": 98, "p": 95 }, { "m": 88, "p": 90 } ],
+        3: [ { "m": 220, "p": 99.9 }, { "m": 108, "p": 95 }, { "m": 98, "p": 90 } ],
+        4: [ { "m": 228, "p": 99.9 }, { "m": 118, "p": 95 }, { "m": 105, "p": 90 } ],
+        5: [ { "m": 234, "p": 99.9 }, { "m": 125, "p": 95 }, { "m": 110, "p": 90 } ]
+    }
+    points = sorted(ref_data[level], key=lambda x: x['m'], reverse=True)
+    if marks >= points[0]['m']:
+        p = 99.9 + ((marks - points[0]['m']) * (0.099 / (300 - points[0]['m'])))
+    else:
+        p = 0
+        for i in range(len(points) - 1):
+            if marks >= points[i+1]['m']:
+                ratio = (marks - points[i+1]['m']) / (points[i]['m'] - points[i+1]['m'])
+                p = points[i+1]['p'] + ratio * (points[i]['p'] - points[i+1]['p'])
+                break
+        if p == 0: p = (marks / points[-1]['m']) * points[-1]['p']
+    return min(99.9999, max(0, p))
+
+def estimate_rank_internally(p):
+    ranges = [
+        {"p": 100, "r": 1}, {"p": 99.99, "r": 100}, {"p": 99.9, "r": 1250}, 
+        {"p": 99.8, "r": 2500}, {"p": 99.5, "r": 10000}, {"p": 99.0, "r": 25000}, 
+        {"p": 98.0, "r": 50000}, {"p": 95.0, "r": 100000}, {"p": 90.0, "r": 200000}
+    ]
+    if p >= 100: return 1
+    for i in range(len(ranges) - 1):
+        if p <= ranges[i]['p'] and p >= ranges[i+1]['p']:
+            ratio = (p - ranges[i+1]['p']) / (ranges[i]['p'] - ranges[i+1]['p'])
+            return int(ranges[i+1]['r'] - ratio * (ranges[i+1]['r'] - ranges[i]['r']))
+    return int((100 - p) * 20000)
+
+# --- YOUR EXISTING HELPER FUNCTIONS ---
 def get_gs_client():
     creds_json = os.environ.get('GOOGLE_CREDENTIALS')
     creds_dict = json.loads(creds_json)
@@ -88,36 +124,53 @@ async def health(): return {"status": "Live"}
 @app.post("/calculate")
 async def process_student(data: StudentInput):
     try:
-        # ... scraping logic ...
+        # SCRAPE FIRST (NO API CALLS YET)
+        link = data.url if data.url.startswith('http') else 'https://' + data.url
+        response = requests.get(link, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
+        soup = BeautifulSoup(response.text, 'html.parser')
+        cand = extract_candidate_info(soup)
         
-        # FIX: Only try to calculate and save if we have a real shift level
-        # If percentile is "pending", we just return the marks to the frontend
+        # Connect to Google ONLY ONCE
+        client = get_gs_client()
+        ss = client.open("JEE_Predictor_Data")
+        
+        ans_tab = ss.worksheet("ANS")
+        ans_key = {str(r['Question ID']): str(r['Correct Response ID']) for r in ans_tab.get_all_records()}
+        
+        report_data = extract_data_from_chunks(re.split(r"(?=Q\.\d+)", soup.get_text(separator=' ', strip=True)), ans_key)
+
+        m_sc = sum(i[3] for i in report_data[0:25])
+        p_sc = sum(i[3] for i in report_data[25:50])
+        c_sc = sum(i[3] for i in report_data[50:75])
+        tot = m_sc + p_sc + c_sc
+
+        final_p, final_r = "0.0000", "0"
+
+        # 2. Update Individual Tab (Skip if data is "pending" to save quota)
         if data.percentile.isdigit():
+            # Internal Math
             level = int(data.percentile)
             p_val = calculate_percentile_internally(level, tot)
             r_val = estimate_rank_internally(p_val)
+            final_p, final_r = f"{p_val:.4f}", str(r_val)
 
-            # Update Google Sheets only when we have the final result
-            client = get_gs_client()
-            ss = client.open("JEE_Predictor_Data")
+            try:
+                ws = ss.worksheet(str(data.phone))
+                ws.clear()
+            except gspread.exceptions.WorksheetNotFound:
+                ws = ss.add_worksheet(title=str(data.phone), rows="100", cols="5")
+            ws.update([["Question ID", "Type", "Response", "Marks"]] + report_data)
+
+            # 3. Update Master Sheet
             master = ss.sheet1
-            row = [data.phone, cand["name"], cand["app_no"], cand["roll_no"], 
-                   cand["test_date"], cand["test_time"], p_sc, c_sc, m_sc, 
-                   tot, f"{p_val:.4f}", r_val, data.url]
+            row = [data.phone, cand["name"], cand["app_no"], cand["roll_no"], cand["test_date"], cand["test_time"], p_sc, c_sc, m_sc, tot, final_p, final_r, data.url]
             master.append_row(row)
-            
-            return {
-                "status": "success", "total": tot, "phy": p_sc, "chem": c_sc, "math": m_sc,
-                "percentile": f"{p_val:.4f}", "rank": r_val, "name": cand["name"],
-                "app_no": cand["app_no"], "roll_no": cand["roll_no"], "test_date": cand["test_date"]
-            }
-        else:
-            # If it's "pending", just return the scraped marks
-            return {
-                "status": "success", "total": tot, "phy": p_sc, "chem": c_sc, "math": m_sc,
-                "name": cand["name"], "app_no": cand["app_no"], "roll_no": cand["roll_no"], 
-                "test_date": cand["test_date"]
-            }
 
+        return {
+            "status": "success", 
+            "percentile": final_p, "rank": final_r,
+            "name": cand["name"], "total": tot, "phy": p_sc, "chem": c_sc, "math": m_sc, 
+            "app_no": cand["app_no"], "roll_no": cand["roll_no"], "test_date": cand["test_date"], "test_time": cand["test_time"]
+        }
     except Exception as e:
         return {"status": "error", "message": str(e)}
