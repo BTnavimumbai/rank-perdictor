@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from typing import Optional, Dict
+from typing import Optional, Dict # Add this import at the top
 
 app = FastAPI()
 
@@ -21,8 +21,9 @@ app.add_middleware(
 class StudentInput(BaseModel):
     url: str
     phone: str
-    percentile: str  # This is the shift level (1-5)
+    percentile: str 
     rank: str
+    # Add this line so Python knows how to handle the manual marks
     manual_data: Optional[Dict] = None
 class StudentInput(BaseModel):
     url: str
