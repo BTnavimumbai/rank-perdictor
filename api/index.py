@@ -21,9 +21,9 @@ app.add_middleware(
 class StudentInput(BaseModel):
     url: str
     phone: str
-    percentile: str  # Shift Level (1-5)
+    percentile: str  # This is the shift level (1-5)
     rank: str
-    manual_data: Optional[Dict] = None # New field for manual marks
+    manual_data: Optional[Dict] = None
 class StudentInput(BaseModel):
     url: str
     phone: str
@@ -130,26 +130,48 @@ async def health(): return {"status": "Live"}
 @app.post("/calculate")
 async def process_student(data: StudentInput):
     try:
-        # Initialize variables
+        # Initializing variables for scope
         p_sc, c_sc, m_sc, tot = 0, 0, 0, 0
         p_cor, p_inc, p_una = 0, 0, 0
         c_cor, c_inc, c_una = 0, 0, 0
         m_cor, m_inc, m_una = 0, 0, 0
+        tot_cor, tot_inc, tot_una = 0, 0, 0
         report_data = []
         cand = {"name": "Manual Entry", "app_no": "-", "roll_no": "-", "test_date": "-", "test_time": "-"}
 
-        # Case A: Scrape from URL
+        # Logic A: Scrape from Link
         if data.url != "manual_mode":
-            # ... (Keep your existing scraping logic here) ...
-            # ... (Ensure tot, p_sc, c_sc, m_sc are calculated as before) ...
-            pass
-        
-        # Case B: Manual Entry (Total Marks Only)
+            link = data.url if data.url.startswith('http') else 'https://' + data.url
+            response = requests.get(link, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
+            soup = BeautifulSoup(response.text, 'html.parser')
+            cand = extract_candidate_info(soup)
+            
+            client = get_gs_client()
+            ss = client.open("JEE_Predictor_Data")
+            ans_tab = ss.worksheet("ANS")
+            ans_key = {str(r['Question ID']): str(r['Correct Response ID']) for r in ans_tab.get_all_records()}
+            
+            report_data = extract_data_from_chunks(re.split(r"(?=Q\.\d+)", soup.get_text(separator=' ', strip=True)), ans_key)
+
+            def get_section_stats(section_rows):
+                correct = sum(1 for row in section_rows if row[3] == 4)
+                incorrect = sum(1 for row in section_rows if row[3] == -1)
+                unattempted = sum(1 for row in section_rows if row[2] in ["Not Answered", "--"])
+                score = sum(row[3] for row in section_rows)
+                return score, correct, incorrect, unattempted
+
+            m_sc, m_cor, m_inc, m_una = get_section_stats(report_data[0:25])
+            p_sc, p_cor, p_inc, p_una = get_section_stats(report_data[25:50])
+            c_sc, c_cor, c_inc, c_una = get_section_stats(report_data[50:75])
+            
+            tot = m_sc + p_sc + c_sc
+            tot_cor, tot_inc, tot_una = (m_cor + p_cor + c_cor), (m_inc + p_inc + c_inc), (m_una + p_una + c_una)
+
+        # Logic B: Manual Total Only
         elif data.manual_data:
             tot = int(data.manual_data.get('total', 0))
-            # Individual subjects stay 0 for manual total entry
 
-        # Calculate Rank/Percentile
+        # Core Calculation
         final_p, final_r = "0.0000", "0"
         if data.percentile.isdigit():
             level = int(data.percentile)
@@ -157,18 +179,32 @@ async def process_student(data: StudentInput):
             r_val = estimate_rank_internally(p_val)
             final_p, final_r = f"{p_val:.4f}", str(r_val)
 
-            # Save to Master Sheet
+            # Single Sheet Update
             client = get_gs_client()
             ss = client.open("JEE_Predictor_Data")
+            
+            if data.url != "manual_mode":
+                try:
+                    ws = ss.worksheet(str(data.phone))
+                    ws.clear()
+                except:
+                    ws = ss.add_worksheet(title=str(data.phone), rows="100", cols="5")
+                ws.update([["Question ID", "Type", "Response", "Marks"]] + report_data)
+
             master = ss.sheet1
-            master.append_row([data.phone, cand["name"], cand["app_no"], cand["roll_no"], 
-                               cand["test_date"], cand["test_time"], p_sc, c_sc, m_sc, 
-                               tot, final_p, final_r, data.url])
+            row = [data.phone, cand["name"], cand["app_no"], cand["roll_no"], cand["test_date"], cand["test_time"], p_sc, c_sc, m_sc, tot, final_p, final_r, data.url]
+            master.append_row(row)
 
         return {
             "status": "success", "percentile": final_p, "rank": final_r, "total": tot,
-            "phy": p_sc, "chem": c_sc, "math": m_sc,
-            "name": cand["name"], "mode": "manual" if data.url == "manual_mode" else "link"
+            "phy": p_sc, "p_cor": p_cor, "p_inc": p_inc, "p_una": p_una,
+            "chem": c_sc, "c_cor": c_cor, "c_inc": c_inc, "c_una": c_una,
+            "math": m_sc, "m_cor": m_cor, "m_inc": m_inc, "m_una": m_una,
+            "tot_cor": tot_cor, "tot_inc": tot_inc, "tot_una": tot_una,
+            "app_no": cand["app_no"], "roll_no": cand["roll_no"], 
+            "test_date": cand["test_date"], "test_time": cand["test_time"],
+            "report_data": report_data, "mode": "manual" if data.url == "manual_mode" else "link",
+            "name": cand["name"]
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
