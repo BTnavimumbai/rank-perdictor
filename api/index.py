@@ -117,7 +117,8 @@ def extract_data_from_chunks(chunks, ans_key):
         else:
             given = re.search(r"Given(?:\s*Answer)?\s*[:]?\s*([-+]?\d*\.?\d+)", chunk)
             if given: res = given.group(1)
-        rows.append([q_id, q_type, res, calculate_marks(q_id, res, q_type, ans_key)])
+        correct_ans = ans_key.get(q_id, "N/A") 
+        rows.append([q_id, q_type, res, correct_ans, calculate_marks(q_id, res, q_type, ans_key)])
     return rows
 
 @app.get("/")
