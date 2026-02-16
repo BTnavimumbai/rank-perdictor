@@ -106,19 +106,50 @@ def extract_data_from_chunks(chunks, ans_key):
         q_id_match = re.search(r"Question ID\s*[:]\s*(\d+)", chunk)
         if not q_id_match: continue
         q_id = q_id_match.group(1)
-        res = "Not Answered"
-        q_type = "MCQ" if "Option 1 ID" in chunk else "SA"
-        if q_type == "MCQ":
-            chosen = re.search(r"Chosen Option\s*[:]\s*([1-4])", chunk)
-            if chosen:
-                opt_match = re.search(rf"Option {chosen.group(1)} ID\s*[:]\s*(\d+)", chunk)
-                if opt_match: res = opt_match.group(1)
-        else:
-            given = re.search(r"Given(?:\s*Answer)?\s*[:]?\s*([-+]?\d*\.?\d+)", chunk)
-            if given: res = given.group(1)
         
-        correct_ans = ans_key.get(q_id, "N/A") 
-        rows.append([q_id, q_type, res, correct_ans, calculate_marks(q_id, res, q_type, ans_key)])
+        student_res = "Not Answered"
+        is_mcq = "Option 1 ID" in chunk
+        q_type = "MCQ" if is_mcq else "SA"
+        
+        if is_mcq:
+            # 1. Extract all 4 Option IDs from the chunk
+            opt_ids = re.findall(r"Option [1-4] ID\s*[:]\s*(\d+)", chunk)
+            
+            # 2. Get the student's actual chosen ID (not just the number 1-4)
+            chosen_match = re.search(r"Chosen Option\s*[:]\s*([1-4])", chunk)
+            
+            if chosen_match and len(opt_ids) == 4:
+                chosen_idx = chosen_match.group(1)
+                # Find the specific ID the student chose based on the display order
+                student_res = re.search(rf"Option {chosen_idx} ID\s*[:]\s*(\d+)", chunk).group(1)
+                
+                # 3. Sorting Logic for the Answer Key
+                if q_id in ans_key:
+                    correct_pos = ans_key[q_id] # e.g., "3"
+                    if correct_pos.isdigit():
+                        sorted_opts = sorted(opt_ids) # Sort IDs numerically: 54, 55, 56, 57
+                        idx = int(correct_pos) - 1 # Convert 1-based to 0-based index
+                        
+                        # The "Correct Response ID" in your sheet is actually the index 
+                        # of the sorted list. We override correct_val for this calculation.
+                        target_correct_id = sorted_opts[idx]
+                        
+                        # Compare the student's chosen ID to the sorted target ID
+                        marks = 4 if student_res == target_correct_id else -1
+                    else:
+                        marks = calculate_marks(q_id, student_res, q_type, ans_key)
+                else:
+                    marks = 0
+            else:
+                student_res = "Not Answered"
+                marks = 0
+        else:
+            # Section B / Numerical Logic remains the same
+            given_match = re.search(r"Given(?:\s*Answer)?\s*[:]?\s*([-+]?\d*\.?\d+)", chunk)
+            if given_match: student_res = given_match.group(1)
+            marks = calculate_marks(q_id, student_res, q_type, ans_key)
+
+        rows.append([q_id, q_type, student_res, marks])
     return rows
 
 @app.get("/")
