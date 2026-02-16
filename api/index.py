@@ -106,54 +106,21 @@ def extract_data_from_chunks(chunks, ans_key):
         q_id_match = re.search(r"Question ID\s*[:]\s*(\d+)", chunk)
         if not q_id_match: continue
         q_id = q_id_match.group(1)
-        
-        student_res = "Not Answered"
-        target_correct_id = "N/A"
-        is_mcq = "Option 1 ID" in chunk
-        q_type = "MCQ" if is_mcq else "SA"
-        marks = 0
-        
-        if is_mcq:
-            opt_ids = re.findall(r"Option [1-4] ID\s*[:]\s*(\d+)", chunk)
-            chosen_match = re.search(r"Chosen Option\s*[:]\s*([1-4])", chunk)
-            
-            if chosen_match and len(opt_ids) == 4:
-                chosen_idx = chosen_match.group(1)
-                student_res = re.search(rf"Option {chosen_idx} ID\s*[:]\s*(\d+)", chunk).group(1)
-                
-                if q_id in ans_key:
-                    correct_pos = ans_key[q_id]
-                    if correct_pos.isdigit():
-                        sorted_opts = sorted(opt_ids)
-                        idx = int(correct_pos) - 1
-                        target_correct_id = sorted_opts[idx]
-                        marks = 4 if student_res == target_correct_id else -1
-                    else:
-                        # Handle "Dropped" or special cases
-                        marks = calculate_marks(q_id, student_res, q_type, ans_key)
-                        target_correct_id = ans_key[q_id]
-            else:
-                student_res = "Not Answered"
-                marks = 0
+        res = "Not Answered"
+        q_type = "MCQ" if "Option 1 ID" in chunk else "SA"
+        if q_type == "MCQ":
+            chosen = re.search(r"Chosen Option\s*[:]\s*([1-4])", chunk)
+            if chosen:
+                opt_match = re.search(rf"Option {chosen.group(1)} ID\s*[:]\s*(\d+)", chunk)
+                if opt_match: res = opt_match.group(1)
         else:
-            # Section B / Numerical
-            given_match = re.search(r"Given(?:\s*Answer)?\s*[:]?\s*([-+]?\d*\.?\d+)", chunk)
-            if given_match: student_res = given_match.group(1)
-            target_correct_id = ans_key.get(q_id, "N/A")
-            marks = calculate_marks(q_id, student_res, q_type, ans_key)
-
-        # Append 5 elements: [0, 1, 2, 3, 4]
-        rows.append([q_id, q_type, student_res, target_correct_id, marks])
+            given = re.search(r"Given(?:\s*Answer)?\s*[:]?\s*([-+]?\d*\.?\d+)", chunk)
+            if given: res = given.group(1)
+        
+        correct_ans = ans_key.get(q_id, "N/A") 
+        rows.append([q_id, q_type, res, correct_ans, calculate_marks(q_id, res, q_type, ans_key)])
     return rows
 
-# Inside process_student function:
-def get_section_stats(section_rows):
-    # row[4] is marks, row[2] is student response
-    correct = sum(1 for row in section_rows if row[4] == 4)
-    incorrect = sum(1 for row in section_rows if row[4] == -1)
-    unattempted = sum(1 for row in section_rows if row[2] in ["Not Answered", "--"])
-    score = sum(row[4] for row in section_rows)
-    return score, correct, incorrect, unattempted
 @app.get("/")
 async def health(): return {"status": "Live"}
 
